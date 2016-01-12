@@ -6,7 +6,8 @@ module Stack.Config.Nix
        ,StackNixException(..)
        ) where
 
-import Control.Monad (when)
+import Control.Applicative
+import Control.Monad (join, when)
 import qualified Data.Text as T
 import Data.Maybe
 import Data.Typeable
@@ -14,15 +15,16 @@ import Distribution.System (OS (..))
 import Stack.Types
 import Control.Exception.Lifted
 import Control.Monad.Catch (throwM,MonadCatch)
-
+import Prelude
 
 -- | Interprets NixOptsMonoid options.
 nixOptsFromMonoid
     :: (Monad m, MonadCatch m)
-    => NixOptsMonoid
+    => Maybe Project
+    -> NixOptsMonoid
     -> OS
     -> m NixOpts
-nixOptsFromMonoid NixOptsMonoid{..} os = do
+nixOptsFromMonoid mproject NixOptsMonoid{..} os = do
     let nixEnable = fromMaybe nixMonoidDefaultEnable nixMonoidEnable
         defaultPure = case os of
           OSX -> False
@@ -32,6 +34,17 @@ nixOptsFromMonoid NixOptsMonoid{..} os = do
         nixInitFile = nixMonoidInitFile
         nixShellOptions = fromMaybe [] nixMonoidShellOptions
                           ++ prefixAll (T.pack "-I") (fromMaybe [] nixMonoidPath)
+        nixCompiler resolverOverride compilerOverride =
+          let mresolver = resolverOverride <|> fmap projectResolver mproject
+              mcompiler = compilerOverride <|> join (fmap projectCompiler mproject)
+          in case (mresolver, mcompiler)  of
+               (_, Just (GhcVersion v)) ->
+                 T.filter (== '.') (versionText v)
+               (Just (ResolverCompiler (GhcVersion v)), _) ->
+                 T.filter (== '.') (versionText v)
+               (Just (ResolverSnapshot (LTS x y)), _) ->
+                 T.pack ("haskell.packages.lts-" ++ show x ++ "_" ++ show y ++ ".ghc")
+               _ -> T.pack "ghc"
     when (not (null nixPackages) && isJust nixInitFile) $
        throwM NixCannotUseShellFileAndPackagesException
     return NixOpts{..}

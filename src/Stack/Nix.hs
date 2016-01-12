@@ -33,7 +33,7 @@ import           Network.HTTP.Client.Conduit (HasHttpManager)
 import           Path
 import           Path.IO
 import qualified Paths_stack as Meta
-import           Prelude -- Fix redundant import warnings
+import           Prelude hiding (mapM) -- Fix redundant import warnings
 import           Stack.Constants (stackProgName,platformVariantEnvVar)
 import           Stack.Config (makeConcreteResolver)
 import           Stack.Docker (reExecArgName)
@@ -43,8 +43,6 @@ import           Stack.Types
 import           Stack.Types.Internal
 import           System.Environment (lookupEnv,getArgs,getExecutablePath)
 import           System.Exit (exitSuccess, exitWith)
-import           Prelude hiding (mapM)
-
 
 -- | If Nix is enabled, re-runs the currently running OS command in a Nix container.
 -- Otherwise, runs the inner action.
@@ -52,14 +50,15 @@ reexecWithOptionalShell
     :: M env m
     => Maybe (Path Abs Dir)
     -> Maybe AbstractResolver
+    -> Maybe CompilerVersion
     -> IO ()
     -> m ()
-reexecWithOptionalShell mprojectRoot maresolver inner =
+reexecWithOptionalShell mprojectRoot maresolver mcompiler inner =
   do config <- asks getConfig
      inShell <- getInShell
      isReExec <- asks getReExec
      if nixEnable (configNix config) && not inShell && not isReExec
-       then runShellAndExit mprojectRoot maresolver getCmdArgs
+       then runShellAndExit mprojectRoot maresolver mcompiler getCmdArgs
        else liftIO inner
   where
     getCmdArgs = do
@@ -74,9 +73,10 @@ runShellAndExit
     :: M env m
     => Maybe (Path Abs Dir)
     -> Maybe AbstractResolver
+    -> Maybe CompilerVersion
     -> m (String, [String])
     -> m ()
-runShellAndExit mprojectRoot maresolver getCmdArgs = do
+runShellAndExit mprojectRoot maresolver mcompiler getCmdArgs = do
      config <- asks getConfig
      mresolver <- mapM makeConcreteResolver maresolver
      envOverride <- getEnvOverride (configPlatform config)
@@ -85,11 +85,7 @@ runShellAndExit mprojectRoot maresolver getCmdArgs = do
          traverse (resolveFile (fromMaybeProjectRoot mprojectRoot)) $
          nixInitFile (configNix config)
      let pkgsInConfig = nixPackages (configNix config)
-         pkgs =
-           pkgsInConfig ++ [case mresolver of
-             Just (ResolverSnapshot (LTS x y)) ->
-               T.pack ("haskell.packages.lts-" ++ show x ++ "_" ++ show y ++ ".ghc")
-             _ -> T.pack "ghc"]
+         pkgs = pkgsInConfig ++ [nixCompiler (configNix config) mresolver mcompiler]
          pureShell = nixPureShell (configNix config)
          nixopts = case mshellFile of
            Just fp -> [toFilePath fp]
